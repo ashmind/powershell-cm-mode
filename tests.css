@@ -10,3 +10,7 @@ body {
 .cm-s-default .cm-builtin {
   color: #007000;
 }
+
+.cm-s-default .cm-comment {
+  color: #c0c0c0;
+}
