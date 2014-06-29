@@ -1,6 +1,7 @@
 {
   "node":      true,
   "camelcase": true,
+  "eqnull":    true,
   "indent":    4,
   "noempty":   true,
   "nonew":     true,
