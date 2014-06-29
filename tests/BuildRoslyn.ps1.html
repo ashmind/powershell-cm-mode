@@ -1,0 +1,198 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>CodeMirror: Powershell mode</title>    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/4.3.0/codemirror.css">
+    <link rel="stylesheet" href="../tests.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/4.3.0/codemirror.js"></script>
+    <script src="../powershell.js"></script>
+  </head>
+  <body>
+    <h1>CodeMirror: Powershell mode</h1>
+    
+    <div>Test code from <a href="https://github.com/ashmind/TryRoslyn/blob/master/Jobs/Build-Roslyn/Build-Roslyn.ps1">Build-Roslyn.ps1</a>:</div>
+    
+    <div><textarea id="textarea"></textarea></div>
+    <script id="code" type="text/x-powershell">Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+# Note: Write-Host, Write-Error and Write-Warning do not function properly in Azure
+
+$MSBuild = ${env:ProgramFiles(x86)} + '\MSBuild\12.0\bin\MSBuild.exe'
+
+# Functions ------
+function Sync-Branch($directory, $branch) {
+    Write-Output "Syncing $directory"
+    if (Test-Path $directory) {
+        Push-Location $directory
+        git pull origin $branch        
+    }
+    else {
+        New-Item -ItemType directory -Path $directory | Out-Null
+        git clone -b $branch $repositoryUrl $directory
+        Push-Location $directory
+    }
+
+    $directoryName = [IO.Path]::GetFileName($directory)    
+    git log -n 1 --pretty=format:"%H %cd %aN%n%B" --date=short > "..\$directoryName.lastcommit.txt"
+    Pop-Location
+}
+
+function Build-Branch($directory, $branch) {
+    $fsName = [IO.Path]::GetFileName($directory)
+
+    Write-Output "Building $directory"
+
+    $buildLogPath = "$sourcesRoot\$fsName.build.log"
+    Copy-Item NuGet.Roslyn.config "$directory\NuGet.config" -Force
+    
+    Write-Output "  BuildAndTest.proj"
+    &$MSBuild "$directory\BuildAndTest.proj" /target:RestorePackages > "$buildLogPath"
+    if ($LastExitCode -ne 0) {
+        Write-Output "  [WARNING] Build failed, see $buildLogPath"
+        return
+    }
+    
+    $csProjectPath = @(@(
+      "Src\Compilers\CSharp\Source\CSharpCodeAnalysis.csproj";
+      "Src\Compilers\CSharp\Desktop\CSharpCodeAnalysis.Desktop.csproj"
+    ) | ? { Test-Path "$directory\$_" })[0];
+        
+    Write-Output "  $csProjectPath"
+    &$MSBuild "$directory\$csProjectPath" `
+        /p:RestorePackages=false `
+        /p:DelaySign=false `
+        /p:SignAssembly=false `
+        >> "$buildLogPath"
+
+    if ($LastExitCode -ne 0) {
+        Write-Output "  [WARNING] Build failed, see $buildLogPath"
+        return
+    }
+    
+    $vbSyntaxGeneratorProjectPath = "Src\Tools\Source\CompilerGeneratorTools\Source\VisualBasicSyntaxGenerator\VisualBasicSyntaxGenerator.vbproj"
+    Write-Output "  $vbSyntaxGeneratorProjectPath"
+    &$MSBuild "$directory\$vbSyntaxGeneratorProjectPath" `
+        /p:RestorePackages=false `
+        /p:DelaySign=false `
+        /p:SignAssembly=false `
+        /p:Configuration=Debug `
+        >> "$buildLogPath"
+        
+    if ($LastExitCode -ne 0) {
+        Write-Output "  [WARNING] Build failed, see $buildLogPath"
+        return
+    }
+    
+    $vbProjectPath = @(@(
+      "Src\Compilers\VisualBasic\Source\BasicCodeAnalysis.vbproj";
+      "Src\Compilers\VisualBasic\Desktop\BasicCodeAnalysis.Desktop.vbproj"
+    ) | ? { Test-Path "$directory\$_" })[0];
+    Write-Output "  $vbProjectPath"
+    &$MSBuild "$directory\$vbProjectPath" `
+        /p:IldasmPath="$toolsRoot\ildasm.exe" `
+        /p:RestorePackages=false `
+        /p:DelaySign=false `
+        /p:SignAssembly=false `
+        /p:Configuration=Debug `
+        >> "$buildLogPath"
+
+    if ($LastExitCode -ne 0) {
+        Write-Output "  [WARNING] Build failed, see $buildLogPath"
+        return
+    }
+  
+    $binariesDirectory = "$binariesRoot\" + $fsName
+    robocopy "$directory\Binaries\Debug" $binariesDirectory /MIR /XF "LastCommit.txt"
+    Copy-Item "$sourcesRoot\$fsName.lastcommit.txt" -Destination "$binariesDirectory\LastCommit.txt"
+    Remove-Item "$directory\NuGet.config"
+    
+    Write-Output "  Build completed"
+}
+
+# Code ------
+try {
+    $Host.UI.RawUI.WindowTitle = "Build Roslyn" # prevents title > 1024 char errors
+
+    #Write-Output "Killing VBCSCompiler instances"
+    #taskkill /IM VBCSCompiler.exe /F
+
+    Write-Output "Environment:"
+    Write-Output "Current path: $(Get-Location)"
+    Write-Output "WEBROOT_PATH: ${env:WEBROOT_PATH}"
+    
+    $webRoot = Resolve-Path $env:WEBROOT_PATH
+    Write-Output "   $webRoot"
+    
+    $webRoot = Resolve-Path $env:WEBROOT_PATH
+    $sourcesRoot = "$webRoot\..\!roslyn-sources"
+    $toolsRoot = "$webRoot\..\!roslyn-build-tools"
+    $binariesRoot = "$webRoot\App_Data\RoslynBranches"
+    $repositoryUrl = 'https://git01.codeplex.com/roslyn'
+
+    if (-not (Test-Path $sourcesRoot)) {
+        New-Item -ItemType directory -Path $sourcesRoot | Out-Null    
+    }
+    $sourcesRoot = Resolve-Path $sourcesRoot
+    Write-Output "Sources Root: $sourcesRoot"
+    
+    if (-not (Test-Path $toolsRoot)) {
+        Throw "Path not found: $toolsRoot"
+    }
+    $toolsRoot =  Resolve-Path $toolsRoot
+    Write-Output "Tools Root: $toolsRoot"
+
+    if (-not (Test-Path $binariesRoot)) {
+        New-Item -ItemType directory -Path $binariesRoot | Out-Null    
+    }
+    $binariesRoot =  Resolve-Path $binariesRoot
+    Write-Output "Binaries Root: $binariesRoot"
+
+    ${env:$HOME} = "$webRoot\.."
+    git --version
+
+    # Hack to make sure git does not traverse up
+    git init
+
+    Write-Output "Requesting branches..."    
+    $branchesRaw = (git ls-remote --heads $repositoryUrl)
+    $branches = $branchesRaw | % { ($_ -match 'refs/heads/(.+)$') | Out-Null; $matches[1] }
+
+    Write-Output "  $branches"
+    $branches | % {
+        Write-Output ''
+        Write-Output "*** $_"
+        $directory = "$sourcesRoot\" + $_.Replace('/', '-')
+        Sync-Branch $directory $_
+        Build-Branch $directory $_
+    }
+    
+    Remove-Item .git -Force -Recurse
+    [IO.File]::SetLastWriteTime("$webRoot\web.config", [DateTime]::Now)
+    
+    #Write-Output "Killing VBCSCompiler instances"
+    #taskkill /IM VBCSCompiler.exe /F
+}
+catch {
+    $ErrorActionPreference = 'Continue'
+    Write-Output "[ERROR] $_"
+    Write-Output 'Returning exit code 1'
+    exit 1
+}</script>    
+    
+    <script>      
+      var code = document.getElementById("code");
+      var textarea = document.getElementById("textarea");
+      textarea.value = code.textContent;
+      var editor = CodeMirror.fromTextArea(textarea, {
+        mode: "powershell",
+        lineNumbers: true,
+        indentUnit: 4,
+        tabMode: "shift",
+        matchBrackets: true
+      });
+    </script>
+    
+    <p><strong>MIME types defined:</strong> <code>text/x-powershell</code>.</p>
+  </body>
+</html>

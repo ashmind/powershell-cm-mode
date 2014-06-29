@@ -1,0 +1,12 @@
+body {
+  font-family: 'Segoe UI', 'Lucida Grande', 'Open Sans', sans-serif;
+}
+
+.CodeMirror {
+  height: auto;
+  font-family: Consolas, Monaco, monospace;
+}
+
+.cm-s-default .cm-builtin {
+  color: #007000;
+}
